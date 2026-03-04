@@ -21,3 +21,13 @@ export function downloadMarkdown(filename: string, content: string) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+export function downloadHtml(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.endsWith('.html') ? filename : `${filename}.html`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

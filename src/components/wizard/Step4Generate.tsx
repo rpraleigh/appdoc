@@ -89,7 +89,7 @@ export function Step4Generate({
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-gray-900">Step 4: Generate</h2>
+        <h2 className="text-xl font-semibold text-gray-900">Step 5: Generate</h2>
         <p className="text-sm text-gray-500 mt-1">Review your inputs, fetch data, then generate documentation.</p>
       </div>
 

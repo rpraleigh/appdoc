@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, ChangeEvent } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Card } from '@/components/ui/Card';
 import { DropZone } from '@/components/ui/DropZone';
 import { Spinner } from '@/components/ui/Spinner';
-import type { WizardState, JiraFeatures } from '@/types';
+import type { WizardState, JiraFeatures, UploadedDesignDoc } from '@/types';
 
 interface Step1Props {
   state: WizardState;
@@ -17,10 +17,21 @@ interface Step1Props {
 
 type TestStatus = 'idle' | 'loading' | 'success' | 'error';
 
+const ACCEPTED_DOC_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/markdown',
+  'text/plain',
+];
+const ACCEPTED_DOC_EXTS = '.pdf,.docx,.md,.txt';
+
 export function Step1Sources({ state, onUpdate, onNext }: Step1Props) {
-  const { jiraCredentials, uiInputMode, crawlUrl, crawlDepth, uploadedScreens } = state;
+  const { jiraCredentials, uiInputMode, crawlUrl, crawlDepth, uploadedScreens, designDocs } = state;
   const [testStatus, setTestStatus] = useState<TestStatus>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const [docUploading, setDocUploading] = useState(false);
+  const [docError, setDocError] = useState('');
+  const docInputRef = useRef<HTMLInputElement>(null);
 
   // Reset Jira test status when credentials change
   useEffect(() => {
@@ -52,16 +63,79 @@ export function Step1Sources({ state, onUpdate, onNext }: Step1Props) {
     }
   }
 
-  const canProceed =
+  const addDesignDocs = useCallback(
+    async (files: FileList | File[]) => {
+      const fileArr = Array.from(files).filter((f) => {
+        const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+        return (
+          ACCEPTED_DOC_TYPES.includes(f.type) ||
+          ['pdf', 'docx', 'md', 'txt'].includes(ext)
+        );
+      });
+      if (fileArr.length === 0) return;
+
+      setDocUploading(true);
+      setDocError('');
+
+      const results: UploadedDesignDoc[] = [];
+
+      for (const file of fileArr) {
+        try {
+          const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+          if (ext === 'txt' || ext === 'md' || file.type === 'text/plain' || file.type === 'text/markdown') {
+            // Read as text client-side
+            const text = await file.text();
+            results.push({ name: file.name, text, mimeType: file.type || 'text/plain' });
+          } else {
+            // Send to server for parsing (PDF, DOCX)
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch('/api/parse-doc', { method: 'POST', body: formData });
+            const data = await res.json() as { text?: string; error?: string };
+            if (!res.ok || data.error) {
+              setDocError(`Failed to parse ${file.name}: ${data.error ?? 'Unknown error'}`);
+            } else {
+              results.push({ name: file.name, text: data.text ?? '', mimeType: file.type });
+            }
+          }
+        } catch (err) {
+          setDocError(`Error processing ${file.name}: ${(err as Error).message}`);
+        }
+      }
+
+      setDocUploading(false);
+      if (results.length > 0) {
+        onUpdate({ designDocs: [...(designDocs ?? []), ...results] });
+      }
+    },
+    [designDocs, onUpdate]
+  );
+
+  const onDocFileInput = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files) addDesignDocs(e.target.files);
+      e.target.value = '';
+    },
+    [addDesignDocs]
+  );
+
+  function removeDesignDoc(idx: number) {
+    onUpdate({ designDocs: (designDocs ?? []).filter((_, i) => i !== idx) });
+  }
+
+  const hasJira =
     jiraCredentials.baseUrl && jiraCredentials.projectKey &&
-    jiraCredentials.email && jiraCredentials.apiToken &&
+    jiraCredentials.email && jiraCredentials.apiToken;
+
+  const canProceed =
+    hasJira &&
     (uiInputMode === 'upload' ? true : crawlUrl.trim().length > 0);
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold text-gray-900">Step 1: Sources</h2>
-        <p className="text-sm text-gray-500 mt-1">Connect your Jira project and choose how to provide UI context.</p>
+        <p className="text-sm text-gray-500 mt-1">Connect your Jira project, upload design documents, and choose how to provide UI context.</p>
       </div>
 
       {/* Jira credentials */}
@@ -125,6 +199,61 @@ export function Step1Sources({ state, onUpdate, onNext }: Step1Props) {
             {testStatus === 'error' && <span className="text-sm text-red-500">{testMessage}</span>}
           </div>
         </div>
+      </Card>
+
+      {/* Design documents */}
+      <Card>
+        <h3 className="text-base font-semibold text-gray-800 mb-1">Design Documents <span className="text-xs font-normal text-gray-400">(optional)</span></h3>
+        <p className="text-xs text-gray-500 mb-4">Upload specs, PRDs, or design docs to supplement Jira data. Supported: PDF, DOCX, MD, TXT.</p>
+
+        <div
+          className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors"
+          onClick={() => docInputRef.current?.click()}
+          onDrop={(e) => { e.preventDefault(); addDesignDocs(e.dataTransfer.files); }}
+          onDragOver={(e) => e.preventDefault()}
+        >
+          {docUploading ? (
+            <div className="flex items-center justify-center gap-2 text-sm text-gray-500">
+              <Spinner size="sm" /> Parsing document…
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-gray-500">
+                Drag &amp; drop documents here, or <span className="text-blue-600 font-medium">browse</span>
+              </p>
+              <p className="text-xs text-gray-400 mt-1">PDF, DOCX, MD, TXT</p>
+            </>
+          )}
+          <input
+            ref={docInputRef}
+            type="file"
+            accept={ACCEPTED_DOC_EXTS}
+            multiple
+            className="hidden"
+            onChange={onDocFileInput}
+          />
+        </div>
+
+        {docError && (
+          <p className="text-xs text-red-500 mt-2">{docError}</p>
+        )}
+
+        {(designDocs ?? []).length > 0 && (
+          <ul className="mt-3 space-y-1">
+            {(designDocs ?? []).map((doc, i) => (
+              <li key={i} className="flex items-center justify-between bg-gray-50 rounded px-3 py-2 text-sm">
+                <span className="truncate text-gray-700">{doc.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeDesignDoc(i)}
+                  className="ml-2 text-red-500 hover:text-red-700 shrink-0"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       {/* UI input mode */}

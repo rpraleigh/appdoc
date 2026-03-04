@@ -19,7 +19,7 @@ interface JiraIssue {
     issuetype: { name: string };
     description: unknown;
     parent?: { key: string };
-    customfield_10014?: string; // epic link (older)
+    customfield_10014?: string;
     epicKey?: string;
   };
 }
@@ -27,12 +27,18 @@ interface JiraIssue {
 async function searchIssues(
   credentials: JiraCredentials,
   jql: string,
-  startAt = 0,
-  maxResults = 100
-): Promise<{ issues: JiraIssue[]; total: number }> {
+  nextPageToken?: string,
+): Promise<{ issues: JiraIssue[]; nextPageToken?: string }> {
   const { baseUrl, email, apiToken } = credentials;
   const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
   const url = `${baseUrl.replace(/\/$/, '')}/rest/api/3/search/jql`;
+
+  const body: Record<string, unknown> = {
+    jql,
+    maxResults: 100,
+    fields: ['summary', 'status', 'issuetype', 'description', 'parent', 'customfield_10014'],
+  };
+  if (nextPageToken) body.nextPageToken = nextPageToken;
 
   const res = await fetch(url, {
     method: 'POST',
@@ -41,7 +47,7 @@ async function searchIssues(
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
-    body: JSON.stringify({ jql, startAt, maxResults, fields: ['summary', 'status', 'issuetype', 'description', 'parent', 'customfield_10014'] }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -49,7 +55,7 @@ async function searchIssues(
     throw new Error(`Jira API error ${res.status}: ${text}`);
   }
 
-  const data = await res.json() as { issues: JiraIssue[]; total: number };
+  const data = await res.json() as { issues: JiraIssue[]; nextPageToken?: string };
   return data;
 }
 
@@ -60,13 +66,12 @@ export async function fetchJiraFeatures(credentials: JiraCredentials): Promise<J
   const epics: JiraEpic[] = [];
   const stories: JiraStory[] = [];
 
-  let startAt = 0;
-  const maxResults = 100;
+  let nextPageToken: string | undefined = undefined;
 
   while (true) {
-    const { issues, total } = await searchIssues(credentials, jql, startAt, maxResults);
+    const result = await searchIssues(credentials, jql, nextPageToken);
 
-    for (const issue of issues) {
+    for (const issue of result.issues) {
       const typeName = issue.fields.issuetype.name.toLowerCase();
       if (typeName === 'epic') {
         epics.push({
@@ -75,10 +80,8 @@ export async function fetchJiraFeatures(credentials: JiraCredentials): Promise<J
           status: issue.fields.status.name,
         });
       } else {
-        // Try to determine epic parent via parent field or customfield
         const epicKey =
           issue.fields.parent?.key ?? issue.fields.customfield_10014 ?? null;
-
         stories.push({
           key: issue.key,
           summary: issue.fields.summary,
@@ -91,8 +94,8 @@ export async function fetchJiraFeatures(credentials: JiraCredentials): Promise<J
       }
     }
 
-    startAt += issues.length;
-    if (startAt >= total || issues.length === 0) break;
+    if (!result.nextPageToken || result.issues.length === 0) break;
+    nextPageToken = result.nextPageToken;
   }
 
   return { epics, stories };

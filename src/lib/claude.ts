@@ -1,39 +1,34 @@
-import Anthropic from '@anthropic-ai/sdk';
-import type { JiraFeatures, UploadedScreen, CrawledPage, Audience } from '@/types';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import type { JiraFeatures, UploadedScreen, CrawledPage, Audience, UploadedDesignDoc } from '@/types';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-interface BuildMessagesOptions {
+export const DEFAULT_PROMPT_TEMPLATE = `Generate comprehensive markdown documentation for the **{audience}** audience.
+
+Structure your response with these sections:
+1. **Overview** — what the application does and why it exists
+2. **Key Features** — organized by epic/feature area
+3. **User Flows** — step-by-step walkthroughs of main tasks
+4. **Audience-Specific Notes** — guidance tailored specifically for {audience}
+5. **Glossary** — key terms and definitions
+
+Write in clear, professional language appropriate for {audience}. Be specific and actionable.
+Respond ONLY with the markdown document — no preamble, no wrapping code fences.`;
+
+interface BuildPartsOptions {
   appName: string;
   appDescription: string;
   jiraFeatures: JiraFeatures | null;
   screens: UploadedScreen[] | null;
   crawledPages: CrawledPage[] | null;
+  designDocs: UploadedDesignDoc[] | null;
   audienceName: string;
   audienceDescription: string;
+  customPromptOverride?: string;
 }
 
-export function buildMessages(opts: BuildMessagesOptions): Anthropic.MessageParam[] {
-  const { appName, appDescription, jiraFeatures, screens, crawledPages, audienceName, audienceDescription } = opts;
-
-  const content: Anthropic.ContentBlockParam[] = [];
-
-  // Add screenshot image blocks
-  if (screens && screens.length > 0) {
-    for (const screen of screens) {
-      const base64 = screen.base64.replace(/^data:[^;]+;base64,/, '');
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: screen.mimeType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
-          data: base64,
-        },
-      });
-    }
-  }
-
-  // Build text block
+function buildPrompt(opts: BuildPartsOptions): string {
+  const { appName, appDescription, jiraFeatures, screens, crawledPages, designDocs, audienceName, audienceDescription, customPromptOverride } = opts;
   const lines: string[] = [];
 
   lines.push(`# Application: ${appName}`);
@@ -70,6 +65,14 @@ export function buildMessages(opts: BuildMessagesOptions): Anthropic.MessagePara
     }
   }
 
+  if (designDocs && designDocs.length > 0) {
+    lines.push('\n## Design Documents');
+    for (const doc of designDocs) {
+      lines.push(`\n### ${doc.name}`);
+      lines.push(doc.text.slice(0, 5000));
+    }
+  }
+
   if (crawledPages && crawledPages.length > 0) {
     lines.push('\n## UI Context (from web crawl)');
     for (const page of crawledPages.slice(0, 15)) {
@@ -77,55 +80,57 @@ export function buildMessages(opts: BuildMessagesOptions): Anthropic.MessagePara
       lines.push(page.text.slice(0, 1000));
     }
   } else if (screens && screens.length > 0) {
-    lines.push(`\n## UI Context\nScreenshots of the application have been provided above (${screens.length} image${screens.length > 1 ? 's' : ''}).`);
+    lines.push(`\n## UI Context\nScreenshots of the application have been provided (${screens.length} image${screens.length > 1 ? 's' : ''}).`);
   }
 
   lines.push(`\n## Target Audience: ${audienceName}`);
   if (audienceDescription) lines.push(audienceDescription);
 
-  lines.push(`
-## Instructions
-Generate comprehensive markdown documentation for the **${audienceName}** audience.
+  const promptTemplate = customPromptOverride ?? DEFAULT_PROMPT_TEMPLATE;
+  const instructions = promptTemplate.replace(/\{audience\}/g, audienceName);
+  lines.push(`\n## Instructions\n${instructions}`);
 
-Structure your response with these sections:
-1. **Overview** — what the application does and why it exists
-2. **Key Features** — organized by epic/feature area
-3. **User Flows** — step-by-step walkthroughs of main tasks
-4. **Audience-Specific Notes** — guidance tailored specifically for ${audienceName}
-5. **Glossary** — key terms and definitions
-
-Write in clear, professional language appropriate for ${audienceName}. Be specific and actionable.
-Respond ONLY with the markdown document — no preamble, no wrapping code fences.`);
-
-  content.push({ type: 'text', text: lines.join('\n') });
-
-  return [{ role: 'user', content }];
+  return lines.join('\n');
 }
 
 export async function streamDocumentation(
-  opts: BuildMessagesOptions
+  opts: BuildPartsOptions
 ): Promise<ReadableStream<Uint8Array>> {
-  const messages = buildMessages(opts);
-
-  const stream = await client.messages.stream({
-    model: 'claude-opus-4-6',
-    max_tokens: 4096,
-    system:
+  const model = client.getGenerativeModel({
+    model: 'gemini-2.0-flash',
+    systemInstruction:
       'You are an expert technical writer. Generate clear, structured markdown documentation. Respond only with the markdown document — no preamble, no wrapping code fences.',
-    messages,
   });
+
+  const parts: Parameters<typeof model.generateContentStream>[0] extends { contents: infer C } ? never : any[] = [];
+
+  // Add images first
+  if (opts.screens && opts.screens.length > 0) {
+    for (const screen of opts.screens) {
+      const base64 = screen.base64.replace(/^data:[^;]+;base64,/, '');
+      parts.push({
+        inlineData: {
+          mimeType: screen.mimeType,
+          data: base64,
+        },
+      });
+    }
+  }
+
+  // Add text prompt
+  parts.push({ text: buildPrompt(opts) });
+
+  const result = await model.generateContentStream(parts);
 
   const encoder = new TextEncoder();
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const event of stream) {
-          if (
-            event.type === 'content_block_delta' &&
-            event.delta.type === 'text_delta'
-          ) {
-            controller.enqueue(encoder.encode(event.delta.text));
+        for await (const chunk of result.stream) {
+          const text = chunk.text();
+          if (text) {
+            controller.enqueue(encoder.encode(text));
           }
         }
         controller.close();

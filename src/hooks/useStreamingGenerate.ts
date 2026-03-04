@@ -66,10 +66,10 @@ export function useStreamingGenerate(): UseStreamingGenerateResult {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const { appName, appDescription, jiraFeatures, screens, crawledPages, audiences, mode } = request;
+    const { appName, appDescription, jiraFeatures, screens, crawledPages, designDocs, audiences, mode } = request;
 
     // Build list of stream targets
-    let targets: Array<{ audienceName: string; audienceDescription: string }>;
+    let targets: Array<{ audienceName: string; audienceDescription: string; customPrompt?: string }>;
 
     if (mode === 'combined' && audiences.length > 1) {
       targets = [
@@ -78,12 +78,14 @@ export function useStreamingGenerate(): UseStreamingGenerateResult {
           audienceDescription: audiences
             .map((a) => `**${a.name}**: ${a.description}`)
             .join('\n'),
+          customPrompt: undefined,
         },
       ];
     } else {
       targets = audiences.map((a: Audience) => ({
         audienceName: a.name,
         audienceDescription: a.description,
+        customPrompt: a.customPrompt,
       }));
     }
 
@@ -97,7 +99,7 @@ export function useStreamingGenerate(): UseStreamingGenerateResult {
     setStatus('loading');
     setError(null);
 
-    const basePayload = { appName, appDescription, jiraFeatures, screens, crawledPages };
+    const basePayload = { appName, appDescription, jiraFeatures, screens, crawledPages, designDocs };
 
     try {
       setStatus('streaming');

@@ -6,8 +6,9 @@ import { useStreamingGenerate } from '@/hooks/useStreamingGenerate';
 import { Step1Sources } from './Step1Sources';
 import { Step2AppInfo } from './Step2AppInfo';
 import { Step3Audiences } from './Step3Audiences';
+import { Step4OutputFormat } from './Step4OutputFormat';
 import { Step4Generate } from './Step4Generate';
-import { Step5Output } from './Step5Output';
+import { Step6Output } from './Step6Output';
 import { randomUUID } from '@/lib/utils';
 import type { WizardState, JiraCredentials } from '@/types';
 
@@ -24,15 +25,18 @@ const DEFAULT_STATE: WizardState = {
   crawlUrl: '',
   crawlDepth: 2,
   uploadedScreens: [],
+  designDocs: [],
   appName: '',
   appDescription: '',
   audiences: [{ id: randomUUID(), name: '', description: '' }],
   generationMode: 'per-audience',
   jiraFeatures: null,
   crawledPages: null,
+  outputFormats: ['md'],
+  embedScreenshots: false,
 };
 
-const STEPS = ['Sources', 'App Info', 'Audiences', 'Generate', 'Output'];
+const STEPS = ['Sources', 'App Info', 'Audiences', 'Output Format', 'Generate', 'Output'];
 
 export function WizardShell() {
   const [step, setStep] = useLocalStorage<number>('appdoc:step', 0);
@@ -59,14 +63,23 @@ export function WizardShell() {
     jiraCredentials,
   };
 
+  // Ensure fields added in new version have defaults when loading old persisted state
+  const state: WizardState = {
+    ...stateWithCreds,
+    designDocs: stateWithCreds.designDocs ?? [],
+    outputFormats: stateWithCreds.outputFormats ?? ['md'],
+    embedScreenshots: stateWithCreds.embedScreenshots ?? false,
+  };
+
   function handleGenerate() {
-    const { appName, appDescription, jiraFeatures, uploadedScreens, crawledPages, audiences, generationMode, uiInputMode } = stateWithCreds;
+    const { appName, appDescription, jiraFeatures, uploadedScreens, crawledPages, designDocs, audiences, generationMode, uiInputMode } = state;
     generate({
       appName,
       appDescription,
       jiraFeatures,
       screens: uiInputMode === 'upload' && uploadedScreens.length > 0 ? uploadedScreens : null,
       crawledPages: uiInputMode === 'url' ? crawledPages : null,
+      designDocs: designDocs.length > 0 ? designDocs : null,
       audiences,
       mode: generationMode,
     });
@@ -116,14 +129,14 @@ export function WizardShell() {
       <main className="max-w-3xl mx-auto px-6 py-8">
         {step === 0 && (
           <Step1Sources
-            state={stateWithCreds}
+            state={state}
             onUpdate={update}
             onNext={() => setStep(1)}
           />
         )}
         {step === 1 && (
           <Step2AppInfo
-            state={stateWithCreds}
+            state={state}
             onUpdate={update}
             onNext={() => setStep(2)}
             onBack={() => setStep(0)}
@@ -131,18 +144,26 @@ export function WizardShell() {
         )}
         {step === 2 && (
           <Step3Audiences
-            state={stateWithCreds}
+            state={state}
             onUpdate={update}
             onNext={() => setStep(3)}
             onBack={() => setStep(1)}
           />
         )}
         {step === 3 && (
-          <Step4Generate
-            state={stateWithCreds}
+          <Step4OutputFormat
+            state={state}
             onUpdate={update}
-            onBack={() => setStep(2)}
             onNext={() => setStep(4)}
+            onBack={() => setStep(2)}
+          />
+        )}
+        {step === 4 && (
+          <Step4Generate
+            state={state}
+            onUpdate={update}
+            onBack={() => setStep(3)}
+            onNext={() => setStep(5)}
             docs={docs}
             generateStatus={status}
             generateError={error}
@@ -150,10 +171,13 @@ export function WizardShell() {
             onCancel={cancel}
           />
         )}
-        {step === 4 && (
-          <Step5Output
+        {step === 5 && (
+          <Step6Output
             docs={docs}
-            appName={stateWithCreds.appName}
+            appName={state.appName}
+            outputFormats={state.outputFormats}
+            embedScreenshots={state.embedScreenshots}
+            uploadedScreens={state.uploadedScreens}
             onReset={handleReset}
           />
         )}
